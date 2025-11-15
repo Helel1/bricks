@@ -2,6 +2,18 @@
 
 > 目标：在一个月内熟练掌握 Bricks 框架原理，能够开发或修改小型功能；默认仅使用本地队列，Redis 后续可按需补充。
 
+## 使用说明（如何配合对话一起用）
+
+- 进度以本文件和 `bricks_architecture.md` 为准，不依赖聊天记录回溯。
+- 每次开始学习前，在提问时注明当前节点，例如：`【Day2 / genesis.py / MetaClass】`。
+- 学到重要结论或图示时，优先让我帮你同步到：
+  - 当天的「今日总结」（写在本文件对应 Day 下）；
+  - 或 `bricks_architecture.md` 中相关章节。
+- 和 Bricks 不强相关的“泛 Python / 架构”问题，可：
+  - 开新对话单独问；或
+  - 记录到单独的 `notes/misc.md`（如你后续创建）。
+- 每次结束学习时，让我用 3–5 行总结今天内容，并写回「今日总结」，确保进度可追踪。
+
 ## 第 1 周：环境起步与整体认知
 
 - 搭建 Python 环境并安装 `requirements.txt`；如暂未配置 Redis，则先使用本地队列运行。
@@ -140,6 +152,35 @@
   - 双层调度：时间触发（utils.scheduler）+ 工作线程（core.dispatch）
   - 事件驱动：const 定义阶段事件，plugins 通过 EventManager 注入前后钩子
   - Flow 驱动：branch/background/rollback 形成“积木式”执行链
+  - Chaos 运行：run 默认织入 before_start/before_close，再由两者内部触发事件
+
+  今日学习补充要点：
+  - 理解了完整命令执行链：`manager.py → Manager.run/_parse → Argv → BaseRunner.run_task → run_local(exec main 文件) → MySpider().run()`，以及 `--workdir` 和 `-a/-extra/-env/-rpc` 对运行环境的影响。
+  - 看清了 `BaseRunner.run_local` 中 `exec(f.read(), {"__name__": "__main__", **argv.args, **argv.extra})` 的含义：使用自定义全局环境执行脚本，把 CLI 参数注入为全局变量，并触发 `if __name__ == "__main__"` 分支。
+  - 深入了 `MetaClass + Chaos/Pangu` 生命周期织入：实例化时自动用 `_when_run/_when_before_start/_when_before_close` 包装对应方法，`run()` 实际执行顺序变为 `before_start → 业务 run → before_close`，两侧通过 `make_context + EventManager.invoke` 自动触发对应阶段事件。
+
+  Chaos/MetaClass 运行与事件织入简要总结：
+
+  ```
+  spider = MySpider()  # 继承自 Chaos/Pangu
+
+  # 实例化阶段（MetaClass.__call__）：
+  # - _when_xxx 方法自动包装对应 xxx（如 run/before_start/before_close）
+  # - 带 __event__ 的方法自动注册为事件处理器（通过 instance.use → EventManager）
+  # - 若实现 install()，在拦截器与事件注册完成后调用一次
+
+  spider.run(...)
+    -> _when_run 包装：
+       before_start()          # 前置钩子
+         -> make_context(BEFORE_START)
+         -> EventManager.invoke(...)  # 调用 BEFORE_START 事件
+         -> 原始 before_start()
+       原始 run(...) 逻辑
+       before_close()          # 收尾钩子
+         -> make_context(BEFORE_CLOSE)
+         -> EventManager.invoke(...)  # 调用 BEFORE_CLOSE 事件
+         -> 原始 before_close()
+  ```
 
 ### Day 3
 - 日期：____

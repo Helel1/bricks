@@ -89,3 +89,66 @@
    - 元类织入事件/拦截器，`Pangu` 初始化 `Dispatcher`，随后进入 `on_consume` 主循环，按事件驱动完成请求/解析/队列/存储的流水线（`bricks/core/genesis.py:1`、`bricks/core/dispatch.py:1`）。
 6. 可观测点
    - `--workdir` 会影响当前工作目录与模块导入路径；`-env` 会在解析阶段写入 `os.environ`；`manage.py` 会输出两行调试打印。
+
+## 8. Chaos 运行流程与事件织入
+
+以 `Chaos`/`Pangu` 为基类的 Spider，在调用 `run()` 时会经过一层元类织入的统一流程：
+
+1. 元类实例化阶段（`MetaClass.__call__`）
+   - 创建实例后遍历所有方法：
+     - 对 `_when_xxx` 形式的方法（如 `_when_run`、`_when_before_start`、`_when_before_close`），自动用它们去包装对应原方法 `xxx`；
+     - 对带有 `__event__` 属性的方法，自动调用 `instance.use(*func.__event__)` 完成事件注册（交给 `EventManager`）。
+   - 若实例实现了 `install()`，在拦截器和事件注册完成后自动调用一次（`Pangu.install` 默认注册错误捕获事件）。
+
+2. `run()` 调用链
+   - 原始 `Chaos.run()` 在实例化后会被 `_when_run` 替换为 wrapper：
+
+     ```text
+     spider.run(...) 实际执行顺序：
+       1) before_start()
+       2) 原始 run(...) 逻辑（例如 run_all）
+       3) before_close()
+     ```
+
+3. `before_start` / `before_close` 的事件织入
+   - `before_start` 被 `_when_before_start` 包装，执行顺序：
+
+     ```text
+     make_context(form=BEFORE_START)
+       -> EventManager.invoke(context)   # 触发所有注册到 BEFORE_START 的事件处理函数
+       -> 原始 before_start()            # 默认是 pass，用户可重写
+     ```
+
+   - `before_close` 被 `_when_before_close` 包装，执行顺序：
+
+     ```text
+     make_context(form=BEFORE_CLOSE)
+       -> EventManager.invoke(context)   # 触发所有注册到 BEFORE_CLOSE 的事件处理函数
+       -> 原始 before_close()
+     ```
+
+4. 整体调用时序总结
+
+   ```text
+   spider = MySpider()
+   spider.run()
+     -> _when_run 包装后的 wrapper
+        -> before_start()
+           -> _when_before_start wrapper
+              -> make_context(BEFORE_START)
+              -> EventManager.invoke(BEFORE_START)  # 调用所有 BEFORE_START 插件
+              -> 原始 before_start()
+        -> 原始 run(...) 业务逻辑
+        -> before_close()
+           -> _when_before_close wrapper
+              -> make_context(BEFORE_CLOSE)
+              -> EventManager.invoke(BEFORE_CLOSE)  # 调用所有 BEFORE_CLOSE 插件
+              -> 原始 before_close()
+   ```
+
+   因此：
+   - `MetaClass` 负责在实例化阶段“织入”拦截器和事件注册；
+   - `_when_*` 系列方法定义了统一的前后逻辑（生命周期钩子 + 事件触发）；
+   - 你在 Spider 上只需：
+     - 重写 `before_start/before_close` 或 `run_xxx`，即可挂载生命周期逻辑；
+     - 使用事件装饰器（给方法加 `__event__`）即可将插件自动注册到对应阶段。
